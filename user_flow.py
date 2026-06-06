@@ -343,24 +343,38 @@ def register_user_handlers(application: Application, deps: Dict[str, Any]):
                 (str(pay_url), str(out_trade_no)),
             )
             conn.commit()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"⚠️ 保存 pay_url 失败 order={out_trade_no}: {e}")
+
+    async def _try_answer_pay_url(query, pay_url: str) -> bool:
+        if not query or not pay_url:
+            return False
+        try:
+            await query.answer(url=str(pay_url))
+            return True
+        except Exception as e:
+            print(f"⚠️ query.answer(url=...) 失败: {e} url_len={len(str(pay_url))}")
+            return False
 
     async def _answer_pay_callback(query, result: dict | None) -> None:
+        if result and result.get("callback_answered"):
+            return
         if result and result.get("open_url"):
-            try:
-                await query.answer(url=result["open_url"])
+            if await _try_answer_pay_url(query, result["open_url"]):
                 return
-            except Exception:
-                pass
         try:
             await query.answer()
         except Exception:
             pass
 
-    def _pay_console_rows(out_trade_no: str, lang: str, channel: str | None = None):
+    def _pay_console_rows(
+        out_trade_no: str,
+        lang: str,
+        channel: str | None = None,
+        pay_url: str | None = None,
+    ):
         open_label = None
-        if channel and _is_link_payment_display(channel):
+        if channel and _is_link_payment_display(channel) and pay_url:
             open_label = t("payment.open_pay_button", lang)
         elif not channel:
             try:
@@ -738,6 +752,7 @@ WHERE p.id=? AND COALESCE(p.status,'on')='on'
                 tier_id,
                 first_payment,
                 payment_notice=payment_notice,
+                query=query,
             )
             await _answer_pay_callback(query, result)
             return
@@ -826,13 +841,30 @@ WHERE p.id=? AND COALESCE(p.status,'on')='on'
 
         payment_notice = _payment_announcement_text(channel, lang)
         result = await _create_payment_order(
-            update, ctx, pid, tier_id, channel, payment_notice=payment_notice
+            update,
+            ctx,
+            pid,
+            tier_id,
+            channel,
+            payment_notice=payment_notice,
+            query=query,
         )
         await _answer_pay_callback(query, result)
 
-    async def _create_payment_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE, pid: str, tier_id: str | None, channel: str, use_preloaded: dict = None, payment_notice: str = ""):
-        """创建支付订单的核心逻辑。链接模式下返回 {\"open_url\": pay_url}。"""
+    async def _create_payment_order(
+        update: Update,
+        ctx: ContextTypes.DEFAULT_TYPE,
+        pid: str,
+        tier_id: str | None,
+        channel: str,
+        use_preloaded: dict = None,
+        payment_notice: str = "",
+        query=None,
+    ):
+        """创建支付订单的核心逻辑。链接模式下尽早 query.answer(url=)。"""
         lang = _lang(update)
+        callback_answered = False
+        link_mode = _is_link_payment_display(channel)
         row = _get_tier_context(pid, tier_id)
         if not row:
             try:
@@ -848,14 +880,15 @@ WHERE p.id=? AND COALESCE(p.status,'on')='on'
         subject = _localized_subject(pid, tier_id, name, tier_name, lang)
         detail = _product_text(pid, lang, "full_description", detail or "")
         
-        # 先显示"正在生成"提示，保持用户体验一致
-        try:
-            await _delete_last_and_send_text(
-                update.effective_chat.id,
-                t("payment.generating", lang)
-            )
-        except Exception:
-            pass
+        # 链接直跳模式跳过「正在生成」，避免占用 callback 应答窗口
+        if not (link_mode and query):
+            try:
+                await _delete_last_and_send_text(
+                    update.effective_chat.id,
+                    t("payment.generating", lang)
+                )
+            except Exception:
+                pass
         
         direct_payment_info = None
         usdt_base_amount = None
@@ -951,8 +984,20 @@ WHERE p.id=? AND COALESCE(p.status,'on')='on'
                 existing = cur.execute("SELECT 1 FROM orders WHERE out_trade_no=? LIMIT 1", (out_trade_no,)).fetchone()
                 if not existing:
                     cur.execute(
-                        "INSERT INTO orders (user_id, product_id, tier_id, amount, payment_method, out_trade_no, create_time) VALUES (?,?,?,?,?,?,?)",
-                        (update.effective_user.id, pid, tier_id, price, channel, out_trade_no, int(time.time())),
+                        "INSERT INTO orders "
+                        "(user_id, product_id, tier_id, amount, payment_method, "
+                        "out_trade_no, create_time, pay_url) "
+                        "VALUES (?,?,?,?,?,?,?,?)",
+                        (
+                            update.effective_user.id,
+                            pid,
+                            tier_id,
+                            price,
+                            channel,
+                            out_trade_no,
+                            int(time.time()),
+                            str(pay_url) if pay_url else None,
+                        ),
                     )
                     conn.commit()
 
@@ -1006,6 +1051,10 @@ WHERE status='pending'
                 return
         if pay_url:
             _save_order_pay_url(out_trade_no, pay_url)
+
+        if link_mode and pay_url and query:
+            callback_answered = await _try_answer_pay_url(query, pay_url)
+
         try:
             row_desc = cur.execute("SELECT full_description FROM products WHERE id=?", (pid,)).fetchone()
             detail = _product_text(pid, lang, "full_description", (row_desc[0]) if (row_desc and row_desc[0]) else "")
@@ -1013,7 +1062,14 @@ WHERE status='pending'
             detail = ""
 
         def _build_pay_kb(pid_val: str, otn: str) -> InlineKeyboardMarkup:
-            return make_markup(_pay_console_rows(otn, lang, channel=channel))
+            return make_markup(
+                _pay_console_rows(
+                    otn,
+                    lang,
+                    channel=channel,
+                    pay_url=pay_url if link_mode else None,
+                )
+            )
         def _with_payment_notice(text: str) -> str:
             notice = (payment_notice or "").strip()
             return f"{notice}\n\n{text}" if notice else text
@@ -1201,13 +1257,19 @@ WHERE status='pending'
                             caption=caption,
                             reply_markup=kb,
                         )
-                        return {"open_url": pay_url}
+                        return {
+                            "callback_answered": callback_answered,
+                            "open_url": pay_url,
+                        }
                     except Exception:
                         pass
                 await _delete_last_and_send_text(
                     update.effective_chat.id, caption, reply_markup=kb
                 )
-                return {"open_url": pay_url}
+                return {
+                    "callback_answered": callback_answered,
+                    "open_url": pay_url,
+                }
 
     @rate_limit_user_payment
     async def cb_open_pay(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1225,7 +1287,26 @@ WHERE status='pending'
             "SELECT pay_url, status FROM orders WHERE out_trade_no=? AND user_id=?",
             (out_trade_no, update.effective_user.id),
         ).fetchone()
-        if not row or row[1] != "pending" or not row[0]:
+        if not row:
+            try:
+                await query.answer(
+                    t("payment.order_not_found", lang),
+                    show_alert=True,
+                )
+            except Exception:
+                pass
+            return
+        pay_url_val, order_status = row[0], row[1]
+        if not pay_url_val:
+            try:
+                await query.answer(
+                    t("payment.open_pay_missing", lang),
+                    show_alert=True,
+                )
+            except Exception:
+                pass
+            return
+        if order_status != "pending":
             try:
                 await query.answer(
                     t("payment.open_pay_expired", lang),
@@ -1234,16 +1315,15 @@ WHERE status='pending'
             except Exception:
                 pass
             return
+        if await _try_answer_pay_url(query, pay_url_val):
+            return
         try:
-            await query.answer(url=row[0])
+            await query.answer(
+                t("payment.open_pay_failed", lang),
+                show_alert=True,
+            )
         except Exception:
-            try:
-                await query.answer(
-                    t("payment.open_pay_expired", lang),
-                    show_alert=True,
-                )
-            except Exception:
-                pass
+            pass
 
     async def cb_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
