@@ -249,7 +249,10 @@ def create_payment(config: Dict[str, Any], order_id: str, amount: float,
         
         # 获取支付方式
         payment_type = config.get('type', 'alipay')
+        display_mode = str(config.get('_display_mode', 'qr') or 'qr').lower()
         device = config.get('device', 'mobile')
+        if display_mode == 'link':
+            device = 'jump'
         
         # 优先使用API接口支付
         if config.get('api_gateway'):
@@ -265,24 +268,37 @@ def create_payment(config: Dict[str, Any], order_id: str, amount: float,
             
             if result.get('code') == 1:
                 data = result.get('data', result)
-                # 优先使用官方短链接 (cashier.php)
                 payurl = data.get('payurl', '')
                 qrcode = data.get('qrcode', '')
                 urlscheme = data.get('urlscheme', '')
-                
-                # 优先级：cashier.php短链接 > 其他payurl > qrcode > urlscheme
-                if payurl and 'cashier.php' in payurl:
-                    print(f"✅ 使用官方短链接: {len(payurl)} 字符")
-                    return True, payurl
-                elif payurl:
-                    print(f"✅ 使用官方支付链接: {len(payurl)} 字符")
-                    return True, payurl
-                elif qrcode:
-                    print(f"✅ 使用官方二维码链接: {len(qrcode)} 字符")
-                    return True, qrcode
-                elif urlscheme:
-                    print(f"✅ 使用原生协议链接: {len(urlscheme)} 字符")
-                    return True, urlscheme
+
+                if display_mode == 'link':
+                    candidates = [
+                        ('payurl', payurl),
+                        ('qrcode', qrcode),
+                        ('urlscheme', urlscheme),
+                    ]
+                else:
+                    candidates = [
+                        ('qrcode', qrcode),
+                        ('payurl', payurl),
+                        ('urlscheme', urlscheme),
+                    ]
+                for label, value in candidates:
+                    if not value:
+                        continue
+                    if label == 'payurl' and 'cashier.php' in value:
+                        print(f"✅ 使用官方短链接: {len(value)} 字符")
+                        return True, value
+                    if label == 'payurl':
+                        print(f"✅ 使用官方支付链接: {len(value)} 字符")
+                        return True, value
+                    if label == 'qrcode':
+                        print(f"✅ 使用官方二维码链接: {len(value)} 字符")
+                        return True, value
+                    if label == 'urlscheme':
+                        print(f"✅ 使用原生协议链接: {len(value)} 字符")
+                        return True, value
             
             # API失败时记录错误但继续尝试页面跳转
             print(f"⚠️ API支付失败: {result.get('msg', '未知错误')}")

@@ -390,11 +390,20 @@ def rows_pay_console(
     recheck_label: str = "🔄 我已支付，重新检查",
     cancel_label: str = "❌ 取消本次付款",
     support_label: Optional[str] = None,
+    open_pay_label: Optional[str] = None,
 ) -> List[List[InlineKeyboardButton]]:
-    rows = [[
+    rows: List[List[InlineKeyboardButton]] = []
+    if open_pay_label:
+        rows.append([
+            InlineKeyboardButton(
+                open_pay_label,
+                callback_data=f"openpay:{otn}",
+            ),
+        ])
+    rows.append([
         InlineKeyboardButton(recheck_label, callback_data=f"recheck:{otn}"),
         InlineKeyboardButton(cancel_label, callback_data=f"ask:cancel:{otn}"),
-    ]]
+    ])
     if support_label:
         rows.append([InlineKeyboardButton(support_label, callback_data="support")])
     return rows

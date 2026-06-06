@@ -436,6 +436,11 @@ try:
 except Exception:
     pass
 try:
+    cur.execute("ALTER TABLE orders ADD COLUMN pay_url TEXT")
+    conn.commit()
+except Exception:
+    pass
+try:
     cur.execute("ALTER TABLE card_keys ADD COLUMN tier_id INTEGER")
     conn.commit()
 except Exception:
