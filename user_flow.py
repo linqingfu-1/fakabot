@@ -346,22 +346,9 @@ def register_user_handlers(application: Application, deps: Dict[str, Any]):
         except Exception as e:
             print(f"⚠️ 保存 pay_url 失败 order={out_trade_no}: {e}")
 
-    async def _try_answer_pay_url(query, pay_url: str) -> bool:
-        if not query or not pay_url:
-            return False
-        try:
-            await query.answer(url=str(pay_url))
-            return True
-        except Exception as e:
-            print(f"⚠️ query.answer(url=...) 失败: {e} url_len={len(str(pay_url))}")
-            return False
-
     async def _answer_pay_callback(query, result: dict | None) -> None:
         if result and result.get("callback_answered"):
             return
-        if result and result.get("open_url"):
-            if await _try_answer_pay_url(query, result["open_url"]):
-                return
         try:
             await query.answer()
         except Exception:
@@ -374,8 +361,10 @@ def register_user_handlers(application: Application, deps: Dict[str, Any]):
         pay_url: str | None = None,
     ):
         open_label = None
+        open_url = None
         if channel and _is_link_payment_display(channel) and pay_url:
             open_label = t("payment.open_pay_button", lang)
+            open_url = pay_url
         elif not channel:
             try:
                 row = cur.execute(
@@ -390,6 +379,7 @@ def register_user_handlers(application: Application, deps: Dict[str, Any]):
                     and _is_link_payment_display(str(row[0]))
                 ):
                     open_label = t("payment.open_pay_button", lang)
+                    open_url = row[1]
             except Exception:
                 pass
         return rows_pay_console(
@@ -398,11 +388,34 @@ def register_user_handlers(application: Application, deps: Dict[str, Any]):
             cancel_label=t("payment.cancel_button", lang),
             support_label=t("common.support", lang),
             open_pay_label=open_label,
+            open_pay_url=open_url,
         )
 
-    # ---------------- 用户端功能：命令与回调 ----------------
+    async def _show_link_payment_console(
+        update: Update,
+        query,
+        caption: str,
+        kb,
+        callback_answered: bool,
+    ) -> dict:
+        """链接模式：纯文本付款台，尽量就地替换「请选择支付方式」消息。"""
+        chat_id = update.effective_chat.id
+        if query and query.message:
+            msg = query.message
+            try:
+                if msg.photo:
+                    await msg.delete()
+                else:
+                    await query.edit_message_text(
+                        text=caption,
+                        reply_markup=kb,
+                    )
+                    return {"callback_answered": callback_answered}
+            except Exception:
+                pass
+        await _delete_last_and_send_text(chat_id, caption, reply_markup=kb)
+        return {"callback_answered": callback_answered}
 
-    # 简单的本地限流（按订单号）
     _recheck_cooldown: Dict[str, float] = {}
 
     def _user_lang(user_id: int | None) -> str:
@@ -861,7 +874,7 @@ WHERE p.id=? AND COALESCE(p.status,'on')='on'
         payment_notice: str = "",
         query=None,
     ):
-        """创建支付订单的核心逻辑。链接模式下尽早 query.answer(url=)。"""
+        """创建支付订单的核心逻辑。链接模式用 url 按钮打开支付页。"""
         lang = _lang(update)
         callback_answered = False
         link_mode = _is_link_payment_display(channel)
@@ -1052,8 +1065,12 @@ WHERE status='pending'
         if pay_url:
             _save_order_pay_url(out_trade_no, pay_url)
 
-        if link_mode and pay_url and query:
-            callback_answered = await _try_answer_pay_url(query, pay_url)
+        if link_mode and pay_url and query and not callback_answered:
+            try:
+                await query.answer()
+                callback_answered = True
+            except Exception:
+                pass
 
         try:
             row_desc = cur.execute("SELECT full_description FROM products WHERE id=?", (pid,)).fetchone()
@@ -1249,27 +1266,13 @@ WHERE status='pending'
                     f"{t('payment.timeout', lang, minutes=mins)}\n\n"
                     f"{t('payment.link_popup_hint', lang)}"
                 )
-                if cover:
-                    try:
-                        await _delete_last_and_send_photo(
-                            update.effective_chat.id,
-                            cover,
-                            caption=caption,
-                            reply_markup=kb,
-                        )
-                        return {
-                            "callback_answered": callback_answered,
-                            "open_url": pay_url,
-                        }
-                    except Exception:
-                        pass
-                await _delete_last_and_send_text(
-                    update.effective_chat.id, caption, reply_markup=kb
+                return await _show_link_payment_console(
+                    update,
+                    query,
+                    caption,
+                    kb,
+                    callback_answered,
                 )
-                return {
-                    "callback_answered": callback_answered,
-                    "open_url": pay_url,
-                }
 
     @rate_limit_user_payment
     async def cb_open_pay(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1315,15 +1318,37 @@ WHERE status='pending'
             except Exception:
                 pass
             return
-        if await _try_answer_pay_url(query, pay_url_val):
-            return
         try:
-            await query.answer(
-                t("payment.open_pay_failed", lang),
-                show_alert=True,
-            )
+            await query.answer()
         except Exception:
             pass
+        if not query.message:
+            return
+        try:
+            ch_row = cur.execute(
+                "SELECT payment_method FROM orders WHERE out_trade_no=? LIMIT 1",
+                (out_trade_no,),
+            ).fetchone()
+            channel = str(ch_row[0]) if ch_row and ch_row[0] else None
+            new_kb = make_markup(
+                _pay_console_rows(
+                    out_trade_no,
+                    lang,
+                    channel=channel,
+                    pay_url=pay_url_val,
+                )
+            )
+            await query.edit_message_reply_markup(reply_markup=new_kb)
+        except Exception:
+            try:
+                await send_ephemeral(
+                    application.bot,
+                    update.effective_chat.id,
+                    t("payment.open_pay_failed", lang),
+                    ttl=5,
+                )
+            except Exception:
+                pass
 
     async def cb_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query

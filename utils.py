@@ -391,9 +391,14 @@ def rows_pay_console(
     cancel_label: str = "❌ 取消本次付款",
     support_label: Optional[str] = None,
     open_pay_label: Optional[str] = None,
+    open_pay_url: Optional[str] = None,
 ) -> List[List[InlineKeyboardButton]]:
     rows: List[List[InlineKeyboardButton]] = []
-    if open_pay_label:
+    if open_pay_label and open_pay_url:
+        rows.append([
+            InlineKeyboardButton(open_pay_label, url=open_pay_url),
+        ])
+    elif open_pay_label:
         rows.append([
             InlineKeyboardButton(
                 open_pay_label,
