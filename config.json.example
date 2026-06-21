@@ -27,7 +27,11 @@
   "USDT_SCAN": {
     "mode": "match_only",
     "shared_store": "/shared/usdt_chain.db",
-    "scan_interval_seconds": 10
+    "scan_interval_seconds": 10,
+    "retention_hours": 24,
+    "cleanup_interval_hours": 24,
+    "vacuum_after_cleanup": true,
+    "vacuum_min_deleted": 1000
   },
   "START": {
     "cover_url": "https://img.example/start-cover.jpg",

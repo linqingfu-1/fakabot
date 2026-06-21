@@ -198,6 +198,10 @@ cat > /opt/fakabot-cluster/scanner/fakabot/config.json <<EOF
     "mode": "shared_scanner",
     "shared_store": "/shared/usdt_chain.db",
     "scan_interval_seconds": 10,
+    "retention_hours": 24,
+    "cleanup_interval_hours": 24,
+    "vacuum_after_cleanup": true,
+    "vacuum_min_deleted": 1000,
     "confirmations": 2,
     "max_blocks_per_scan": 5,
     "tron_api_keys": [
@@ -969,6 +973,10 @@ mkdir -p bot-a/data bot-b/data shared
     "mode": "shared_scanner",
     "shared_store": "/shared/usdt_chain.db",
     "scan_interval_seconds": 10,
+    "retention_hours": 24,
+    "cleanup_interval_hours": 24,
+    "vacuum_after_cleanup": true,
+    "vacuum_min_deleted": 1000,
     "confirmations": 2,
     "max_blocks_per_scan": 5,
     "tron_api_keys": [
@@ -985,6 +993,10 @@ mkdir -p bot-a/data bot-b/data shared
 - `mode`: 共享扫链服务必须是 `shared_scanner`。
 - `shared_store`: 共享扫链库路径，容器内固定建议使用 `/shared/usdt_chain.db`。
 - `scan_interval_seconds`: 扫链间隔，建议 10 到 30 秒。
+- `retention_hours`: 链上交易保留小时数，默认 `24`；`0` 表示关闭自动清理。低配服务器推荐 24，生产下限建议不低于 12（订单超时 1 小时时）。
+- `cleanup_interval_hours`: 清理任务间隔，默认 `24` 小时执行一次 DELETE。
+- `vacuum_after_cleanup`: 清理后是否 VACUUM 回收磁盘；低配机可设 `false` 改为每月手动 VACUUM。
+- `vacuum_min_deleted`: 仅当本次删除行数达到该值才 VACUUM，默认 `1000`，减轻 IO 峰值。
 - `confirmations`: 区块确认数，建议生产环境使用 `2`。
 - `max_blocks_per_scan`: 每次最多补扫多少个区块，建议 5 到 20。
 - `tron_api_keys`: TronGrid API key 列表，429 限流时会切换 key 并退避。

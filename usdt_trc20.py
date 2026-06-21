@@ -96,7 +96,43 @@ CREATE TABLE IF NOT EXISTS settings (
         "CREATE INDEX IF NOT EXISTS idx_usdt_chain_match "
         "ON usdt_chain_transactions(to_address, raw_amount, tx_time)"
     )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_usdt_chain_tx_time "
+        "ON usdt_chain_transactions(tx_time)"
+    )
     conn.commit()
+
+
+def purge_old_chain_transactions(
+    cur,
+    conn,
+    *,
+    retention_hours: int,
+    vacuum: bool = False,
+    vacuum_min_deleted: int = 1000,
+) -> int:
+    """Delete chain transactions older than retention_hours (by tx_time)."""
+    hours = int(retention_hours or 0)
+    if hours <= 0:
+        return 0
+
+    cutoff_ms = int(time.time() * 1000) - hours * 3600 * 1000
+    cur.execute(
+        "DELETE FROM usdt_chain_transactions WHERE tx_time < ?",
+        (cutoff_ms,),
+    )
+    deleted = int(cur.rowcount or 0)
+    conn.commit()
+
+    if vacuum and deleted >= max(1, int(vacuum_min_deleted or 0)):
+        try:
+            cur.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            cur.execute("VACUUM;")
+            conn.commit()
+        except Exception as exc:
+            print(f"⚠️ USDT扫链库 VACUUM 失败: {exc}")
+
+    return deleted
 
 
 def normalize_amount(value) -> Decimal:

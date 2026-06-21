@@ -11,7 +11,11 @@ import sqlite3
 import time
 from typing import Any
 
-from usdt_trc20 import ensure_usdt_chain_tables, scan_chain_to_store
+from usdt_trc20 import (
+    ensure_usdt_chain_tables,
+    purge_old_chain_transactions,
+    scan_chain_to_store,
+)
 
 
 BASE_DIR = os.path.dirname(__file__)
@@ -93,6 +97,65 @@ def is_rate_limited(exc: Exception) -> bool:
     return "429" in text or "Too Many Requests" in text
 
 
+def _warn_retention_vs_timeout(config: dict[str, Any], retention_hours: int) -> None:
+    """Log when retention is shorter than order timeout plus buffer."""
+    payment_cfg = (config.get("PAYMENTS") or {}).get("usdt_trc20_direct", {}) or {}
+    try:
+        timeout_seconds = int(payment_cfg.get("timeout_seconds", 3600) or 3600)
+    except Exception:
+        timeout_seconds = 3600
+    min_hours = (timeout_seconds + 21600) // 3600
+    if retention_hours > 0 and retention_hours * 3600 < timeout_seconds + 21600:
+        print(
+            f"⚠️ USDT扫链保留期偏短: retention_hours={retention_hours}, "
+            f"建议 >= {min_hours}（timeout={timeout_seconds}s + 6h 缓冲）"
+        )
+
+
+def _maybe_purge_chain_store(
+    cur,
+    conn,
+    scan_cfg: dict[str, Any],
+    last_cleanup_ts: float,
+) -> float:
+    """Run retention cleanup when cleanup_interval_hours has elapsed."""
+    retention_hours = int(scan_cfg.get("retention_hours", 24) or 0)
+    if retention_hours <= 0:
+        return last_cleanup_ts
+
+    cleanup_interval_hours = max(
+        1,
+        int(scan_cfg.get("cleanup_interval_hours", 24) or 24),
+    )
+    now = time.time()
+    if now - last_cleanup_ts < cleanup_interval_hours * 3600:
+        return last_cleanup_ts
+
+    vacuum = bool(scan_cfg.get("vacuum_after_cleanup", True))
+    try:
+        vacuum_min_deleted = int(scan_cfg.get("vacuum_min_deleted", 1000) or 1000)
+    except Exception:
+        vacuum_min_deleted = 1000
+
+    try:
+        deleted = purge_old_chain_transactions(
+            cur,
+            conn,
+            retention_hours=retention_hours,
+            vacuum=vacuum,
+            vacuum_min_deleted=vacuum_min_deleted,
+        )
+        if deleted:
+            print(
+                f"✅ USDT扫链清理: deleted={deleted}, "
+                f"retention_hours={retention_hours}"
+            )
+    except Exception as exc:
+        print(f"⚠️ USDT扫链清理失败: {exc}")
+
+    return now
+
+
 def run_forever() -> None:
     """Run the shared scanner loop."""
     config = load_config()
@@ -103,15 +166,21 @@ def run_forever() -> None:
         return
     shared_store = scan_cfg.get("shared_store") or "/shared/usdt_chain.db"
     interval = max(5, int(scan_cfg.get("scan_interval_seconds", 30) or 30))
+    retention_hours = int(scan_cfg.get("retention_hours", 24) or 0)
     api_keys = scan_cfg.get("tron_api_keys") or [
         ((config.get("PAYMENTS") or {}).get("usdt_trc20_direct", {}) or {}).get("tron_api_key")
     ]
     api_keys = [key for key in api_keys if key]
     key_index = 0
     backoff_seconds = interval
+    last_cleanup_ts = 0.0
 
     conn, cur = open_shared_store(shared_store)
-    print(f"✅ USDT共享扫链服务启动: store={shared_store}, interval={interval}s")
+    _warn_retention_vs_timeout(config, retention_hours)
+    print(
+        f"✅ USDT共享扫链服务启动: store={shared_store}, "
+        f"interval={interval}s, retention_hours={retention_hours}"
+    )
     try:
         while True:
             try:
@@ -125,6 +194,12 @@ def run_forever() -> None:
                 )
                 if saved_count:
                     print(f"✅ USDT共享扫链入库交易数: {saved_count}")
+                last_cleanup_ts = _maybe_purge_chain_store(
+                    cur,
+                    conn,
+                    scan_cfg,
+                    last_cleanup_ts,
+                )
                 backoff_seconds = interval
                 time.sleep(interval)
             except Exception as exc:
