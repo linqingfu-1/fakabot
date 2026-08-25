@@ -124,7 +124,7 @@ USDT_CNY_RATE="7.20"
 USDT_MIN_AMOUNT="1.00"
 
 # Let's Encrypt 证书申请邮箱（nginx-setup 自动申请证书时使用，可选）
-CERTBOT_EMAIL="你的邮箱"
+CERTBOT_EMAIL="1459684961@qq.com"
 EOF
     echo "✅ 已生成 $ENV_FILE"
     echo "   请编辑该文件填写真实值，然后执行: $0 deploy"
