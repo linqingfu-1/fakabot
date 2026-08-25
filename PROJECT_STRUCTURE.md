@@ -28,7 +28,8 @@
 ### 文档
 - `README.md` - 项目说明
 - `CHANGELOG.md` - 更新日志
-- `DEPLOY.md` - 部署文档
+- `deploy/MULTI_BOT_USDT_DEPLOYMENT.md` - 多机器人 USDT 扫链部署文档（含 Nginx/HTTPS）
+- `deploy/deploy_multi_bot.sh` - 多机器人一键部署脚本
 - `.gitignore` - Git忽略文件
 
 ---
@@ -57,7 +58,10 @@ fakabot/
 ├── 📚 文档
 │   ├── README.md                       # 项目说明
 │   ├── CHANGELOG.md                    # 更新日志
-│   ├── DEPLOY.md                       # 部署文档
+│   ├── deploy/                         # 部署文档与脚本
+│   │   ├── MULTI_BOT_USDT_DEPLOYMENT.md # 多机器人部署文档
+│   │   ├── REWRITE_DOCKER_COMPOSE.md    # compose 修复文档
+│   │   └── deploy_multi_bot.sh          # 一键部署脚本
 │   ├── PROJECT_STRUCTURE.md            # 项目结构（本文件）
 │   └── .gitignore                      # Git忽略
 │

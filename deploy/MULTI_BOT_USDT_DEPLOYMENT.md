@@ -4,6 +4,20 @@
 
 ## 0. 六个机器人从零部署总览
 
+> **一键脚本**：仓库 `deploy/` 目录下的 `deploy_multi_bot.sh` 已把本节 0.1~0.16 全部自动化。把脚本上传到服务器后执行：
+>
+> ```bash
+> ./deploy/deploy_multi_bot.sh init      # 生成 deploy.env 模板，填写后继续
+> ./deploy/deploy_multi_bot.sh deploy    # 一键完成：拉代码→生成配置→改compose→构建→启动→验证
+> ./deploy/deploy_multi_bot.sh nginx-setup # 自动安装 Nginx+申请 HTTPS 证书+配置 6 组转发（0.11 节全流程）
+> ./deploy/deploy_multi_bot.sh nginx     # 仅生成 Nginx location 片段（手动模式）
+> ./deploy/deploy_multi_bot.sh verify    # 验证部署
+> ./deploy/deploy_multi_bot.sh update    # 更新代码并重建（保留 config.json/data/compose）
+> ./deploy/deploy_multi_bot.sh backup    # 备份业务数据与共享扫链库
+> ```
+>
+> 注意：`deploy` 会按模板重新生成各目录的 `config.json` 和 `docker-compose.yml`（用于从零部署）；日常更新代码请用 `update`，它会排除这两个文件。下面的手工步骤保留，便于排查问题或不用脚本时照做。
+
 本节按“一台新的 Ubuntu 服务器，Docker 和 Docker Compose 已经安装好，要部署 6 个发卡机器人”的场景编写。下面命令假设：
 
 - 服务器目录使用 `/opt/fakabot-cluster`。
@@ -72,7 +86,7 @@ cd /opt/fakabot-cluster
 
 ```bash
 cat > /opt/fakabot-cluster/deploy.env <<'EOF'
-REPO_URL="你的fakabot仓库地址"
+REPO_URL="https://github.com/linqingfu-1/fakabot.git"
 ADMIN_ID="你的Telegram管理员数字ID"
 
 TRONGRID_KEY_1="你的TronGridKey1"
@@ -255,10 +269,10 @@ cat > "$config_path" <<JSON
       "name": "支付宝",
       "enabled": true,
       "priority": 10,
-      "merchant_id": "YOUR_KAVIP_MERCHANT_ID",
+      "merchant_id": "1023",
       "gateway": "https://kavip.biz/submit.php",
       "api_gateway": "https://kavip.biz/mapi.php",
-      "key": "YOUR_KAVIP_API_KEY",
+      "key": "76F67wdDD7p56l7g1F66wFTRLv7pd5rv",
       "type": "alipay",
       "route": "/pay/kavip"
     },
@@ -349,9 +363,8 @@ sed -i "s/container_name: fakabot-usdt-scanner/container_name: fakabot-${bot}-us
 sed -i "s/container_name: fakabot$/container_name: fakabot-${bot}/g" "$compose"
 sed -i "s/fakabot_network/fakabot_${bot}_network/g" "$compose"
 sed -i "s/redis_data:/redis_data_${bot}:/g" "$compose"
-sed -i "s/usdt_chain_data:/usdt_chain_data_${bot}:/g" "$compose"
 sed -i "s#- ./data:/app/data#- /opt/fakabot-cluster/${bot}/data:/app/data#g" "$compose"
-sed -i "s#- usdt_chain_data_${bot}:/shared#- /opt/fakabot-cluster/shared:/shared#g" "$compose"
+sed -i "s#- usdt_chain_data:/shared#- /opt/fakabot-cluster/shared:/shared#g" "$compose"
 sed -i "s#127.0.0.1:58001:58001#127.0.0.1:${app_port}:58001#g" "$compose"
 sed -i "s#127.0.0.1:58002:58002#127.0.0.1:${extra_port}:58002#g" "$compose"
 EOF
@@ -389,8 +402,7 @@ sed -i 's/container_name: fakabot-usdt-scanner/container_name: fakabot-usdt-scan
 sed -i 's/container_name: fakabot$/container_name: fakabot-scanner-bot-disabled/g' docker-compose.yml
 sed -i 's/fakabot_network/fakabot_scanner_network/g' docker-compose.yml
 sed -i 's/redis_data:/redis_data_scanner:/g' docker-compose.yml
-sed -i 's/usdt_chain_data:/usdt_chain_data_scanner:/g' docker-compose.yml
-sed -i 's#- usdt_chain_data_scanner:/shared#- /opt/fakabot-cluster/shared:/shared#g' docker-compose.yml
+sed -i 's#- usdt_chain_data:/shared#- /opt/fakabot-cluster/shared:/shared#g' docker-compose.yml
 ```
 
 检查 scanner compose：
@@ -451,7 +463,7 @@ docker logs -f fakabot-usdt-scanner
 看到类似日志说明启动成功：
 
 ```text
-✅ USDT共享扫链服务启动: store=/shared/usdt_chain.db, interval=10s
+✅ USDT共享扫链服务启动: store=/shared/usdt_chain.db, interval=10s, retention_hours=24
 ```
 
 按 `Ctrl+C` 退出日志查看，不会停止容器。
@@ -495,7 +507,7 @@ curl -s http://127.0.0.1:58205/health && echo " bot05 ok"
 curl -s http://127.0.0.1:58206/health && echo " bot06 ok"
 ```
 
-### 0.11 配置 Nginx 反向代理
+### 0.11 配置 Nginx 反向代理与 HTTPS 证书
 
 本部署使用同一个主域名 `https://pay.unishopasa.cn`，通过路径区分 6 个机器人：
 
@@ -508,7 +520,88 @@ curl -s http://127.0.0.1:58206/health && echo " bot06 ok"
 | `bot05` | `https://pay.unishopasa.cn/bot15` | `58205` |
 | `bot06` | `https://pay.unishopasa.cn/bot16` | `58206` |
 
-你已经安装好 Nginx，并且主域名 SSL 证书也已经装好，所以不需要重新安装 Nginx，也不需要重新申请证书。只需要在 `pay.unishopasa.cn` 现有的 HTTPS `server` 块里增加 6 组 `location`。
+如果服务器还没有安装 Nginx，也没有申请过 HTTPS 证书，按下面步骤从零安装；已经装好证书的可以直接跳到 0.11.4。
+
+> **自动化**：0.11.1~0.11.4 全部步骤可用一键脚本完成：
+>
+> ```bash
+> ./deploy/deploy_multi_bot.sh nginx-setup
+> ```
+>
+> 脚本会自动：安装 Nginx/Certbot → 放行 80/443 → 检查 DNS 解析 → 创建 80 端口站点 → 申请证书（`deploy.env` 里可填 `CERTBOT_EMAIL`，不填则使用 `--register-unsafely-without-email`）→ 生成 6 组 location 并以 `include /etc/nginx/fakabot-locations.conf;` 写入 443 server 块 → `nginx -t` 校验并 reload → 逐一 curl 验证。以下手工步骤保留，便于排查问题或不用脚本时照做。
+
+#### 0.11.1 安装 Nginx 与 Certbot
+
+```bash
+apt update
+apt install -y nginx certbot python3-certbot-nginx
+```
+
+放行 80/443 端口。如果服务器开启了 `ufw` 防火墙：
+
+```bash
+ufw allow 80/tcp
+ufw allow 443/tcp
+```
+
+如果使用云服务器（阿里云、腾讯云等），还需要在云控制台的安全组里放行 80 和 443 端口。
+
+#### 0.11.2 解析域名并创建 HTTP 站点配置
+
+先把 `pay.unishopasa.cn` 的 DNS A 记录解析到本服务器公网 IP（在域名服务商控制台操作），然后确认解析生效：
+
+```bash
+getent hosts pay.unishopasa.cn
+```
+
+创建 HTTP 站点配置（先只监听 80，用于后续证书验证）：
+
+```bash
+cat > /etc/nginx/sites-available/pay.unishopasa.cn.conf <<'EOF'
+server {
+    listen 80;
+    server_name pay.unishopasa.cn;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+}
+EOF
+
+ln -s /etc/nginx/sites-available/pay.unishopasa.cn.conf /etc/nginx/sites-enabled/ 2>/dev/null || true
+nginx -t && systemctl reload nginx
+```
+
+如果服务器上已有该域名的 80 server 块，可以跳过创建，直接使用现有的。
+
+#### 0.11.3 申请 Let's Encrypt HTTPS 证书
+
+用 Certbot 的 Nginx 插件申请免费证书，它会自动把上面的 80 server 块改写成 443（加上 SSL 配置和 80→443 跳转）：
+
+```bash
+certbot --nginx -d pay.unishopasa.cn -m 你的邮箱 --agree-tos --redirect
+```
+
+申请成功后证书文件路径：
+
+```text
+证书: /etc/letsencrypt/live/pay.unishopasa.cn/fullchain.pem
+私钥: /etc/letsencrypt/live/pay.unishopasa.cn/privkey.pem
+```
+
+验证自动续期已启用（Certbot 默认安装 systemd timer，到期前自动续签）：
+
+```bash
+systemctl list-timers | grep certbot
+```
+
+没有输出的话手动验证续期流程：
+
+```bash
+certbot renew --dry-run
+```
+
+#### 0.11.4 把 6 组 location 加入 HTTPS server 块
 
 先找到当前主域名配置文件：
 
@@ -637,6 +730,20 @@ curl -I https://pay.unishopasa.cn/bot16/health
 ```
 
 如果返回 `200 OK`，说明 Nginx 路径转发正常。
+
+> **关于 Telegram webhook**：本项目默认使用轮询模式（`USE_WEBHOOK` 默认 `false`），上述 6 组 `location` 只代理容器内 58001 端口（支付回调、`/health`、短链接），足够使用。如果你在 `config.json` 里开启 `USE_WEBHOOK=true`，Telegram webhook（默认路径 `/tg/webhook`）监听的是容器内 58002 端口（即开头端口规划表中的备用端口），需要为每个机器人额外加一组转发，例如 bot01：
+>
+> ```nginx
+> location = /bot11/tg/webhook {
+>     proxy_pass http://127.0.0.1:58301/tg/webhook;
+>     proxy_set_header Host $host;
+>     proxy_set_header X-Real-IP $remote_addr;
+>     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+>     proxy_set_header X-Forwarded-Proto $scheme;
+> }
+> ```
+>
+> 其余 5 个机器人按 `/bot12`~`/bot16` 对应 58302~58306 端口类推。
 
 每个机器人的支付回调地址会跟随自己的 `DOMAIN` 生成：
 
@@ -834,6 +941,7 @@ git pull
 rsync -a --delete \
   --exclude config.json \
   --exclude data/ \
+  --exclude docker-compose.yml \
   /opt/fakabot-cluster/source/ \
   /opt/fakabot-cluster/scanner/fakabot/
 
@@ -841,6 +949,7 @@ for bot in bot01 bot02 bot03 bot04 bot05 bot06; do
   rsync -a --delete \
     --exclude config.json \
     --exclude data/ \
+    --exclude docker-compose.yml \
     /opt/fakabot-cluster/source/ \
     "/opt/fakabot-cluster/${bot}/fakabot/"
 done
@@ -854,7 +963,7 @@ for bot in bot01 bot02 bot03 bot04 bot05 bot06; do
 done
 ```
 
-注意：更新代码时不要覆盖各目录里的 `config.json` 和 `data`，所以上面的 `rsync` 已排除这两个路径。
+注意：更新代码时不要覆盖各目录里的 `config.json`、`data` 和 `docker-compose.yml`。`docker-compose.yml` 里保存着 0.6/0.7 节修改过的容器名、宿主机端口和 `/shared` 共享挂载，一旦被 source 覆盖，会导致容器名和端口冲突、共享扫链库失联。上面的 `rsync` 已排除这三个路径；如果仓库更新了 compose 文件本身，需要手动同步并重新执行 0.6/0.7 节的修改。
 
 ## 1. 架构说明
 
@@ -912,14 +1021,14 @@ flowchart LR
 /opt/fakabot-cluster/
   scanner/
     fakabot/
-    config.json
+      config.json
   bot-a/
     fakabot/
-    config.json
+      config.json
     data/
   bot-b/
     fakabot/
-    config.json
+      config.json
     data/
   shared/
     usdt_chain.db
@@ -993,7 +1102,7 @@ mkdir -p bot-a/data bot-b/data shared
 - `mode`: 共享扫链服务必须是 `shared_scanner`。
 - `shared_store`: 共享扫链库路径，容器内固定建议使用 `/shared/usdt_chain.db`。
 - `scan_interval_seconds`: 扫链间隔，建议 10 到 30 秒。
-- `retention_hours`: 链上交易保留小时数，默认 `24`；`0` 表示关闭自动清理。低配服务器推荐 24，生产下限建议不低于 12（订单超时 1 小时时）。
+- `retention_hours`: 链上交易保留小时数，默认 `24`；`0` 表示关闭自动清理。代码要求保留期不低于「订单超时 + 6 小时缓冲」（订单超时 1 小时时阈值为 `7`），低于该值启动时会打印警告；生产建议取 `12` 以上留足余量。
 - `cleanup_interval_hours`: 清理任务间隔，默认 `24` 小时执行一次 DELETE。
 - `vacuum_after_cleanup`: 清理后是否 VACUUM 回收磁盘；低配机可设 `false` 改为每月手动 VACUUM。
 - `vacuum_min_deleted`: 仅当本次删除行数达到该值才 VACUUM，默认 `1000`，减轻 IO 峰值。
@@ -1018,10 +1127,10 @@ mkdir -p bot-a/data bot-b/data shared
       "name": "支付宝",
       "enabled": false,
       "priority": 10,
-      "merchant_id": "YOUR_KAVIP_MERCHANT_ID",
+      "merchant_id": "1023",
       "gateway": "https://kavip.biz/submit.php",
       "api_gateway": "https://kavip.biz/mapi.php",
-      "key": "YOUR_KAVIP_API_KEY",
+      "key": "76F67wdDD7p56l7g1F66wFTRLv7pd5rv",
       "type": "alipay",
       "route": "/pay/kavip"
     },
@@ -1235,7 +1344,7 @@ docker logs -f fakabot-usdt-scanner
 正常日志类似：
 
 ```text
-✅ USDT共享扫链服务启动: store=/shared/usdt_chain.db, interval=10s
+✅ USDT共享扫链服务启动: store=/shared/usdt_chain.db, interval=10s, retention_hours=24
 ✅ USDT共享扫链入库交易数: 1
 ```
 
@@ -1371,12 +1480,11 @@ sqlite3 /shared/usdt_chain.db "select txid, block_number, to_address, amount, tx
 }
 ```
 
-单机器人测试推荐：
+单机器人测试推荐。`standalone` 模式把链上交易写入本机业务库（`data/sp_shop.db` 内的 `usdt_chain_transactions` 表），不读取 `shared_store`，无需配置该字段：
 
 ```json
 "USDT_SCAN": {
   "mode": "standalone",
-  "shared_store": "/shared/usdt_chain.db",
   "scan_interval_seconds": 15,
   "confirmations": 1,
   "max_blocks_per_scan": 20,
@@ -1397,31 +1505,3 @@ sqlite3 /shared/usdt_chain.db "select txid, block_number, to_address, amount, tx
 - 每个机器人后台已开启 `USDT(TRC20直付)`。
 - 共享扫链服务日志没有持续 429。
 - 测试订单可以匹配并自动发货。
-
-
-同步代码到scanner和六个业务机器人。排除生产配置和数据
-rsync -a --delete \
-  --exclude config.json \
-  --exclude data/ \
-  /opt/fakabot-cluster/source/ \
-  /opt/fakabot-cluster/scanner/fakabot/
-
-for bot in bot01 bot02 bot03 bot04 bot05 bot06; do
-  rsync -a --delete \
-    --exclude config.json \
-    --exclude data/ \
-    /opt/fakabot-cluster/source/ \
-    "/opt/fakabot-cluster/${bot}/fakabot/"
-done
-
-你在服务器上检查：
-
-
-grep -n "pay_usdt_rate\|pay_usdt_min\|USDT汇率\|USDT最小" \
-  /opt/fakabot-cluster/bot01/fakabot/admin_panel.py
-
-如果宿主机有输出，再检查容器内代码：
-
-
-docker exec -it fakabot-bot01 sh -c \
-  "grep -n 'pay_usdt_rate\\|pay_usdt_min\\|USDT汇率\\|USDT最小' /app/admin_panel.py"
